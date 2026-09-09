@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Відеоспостереження</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { 
+            font-family: sans-serif; 
+            text-align: center; 
+            background: #222; 
+            color: white; 
+            margin: 0;
+            padding: 20px;
+        }
+        h1 { margin-top: 10px; }
+        .video-container { margin-top: 20px; }
+        img { border: 3px solid #00ff00; border-radius: 4px; }
+        .info-panel {
+            margin: 20px auto;
+            padding: 15px;
+            width: 600px;
+            background: #333;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .controls {
+            margin-top: 15px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        input[type=range] { width: 300px; }
+        .highlight { color: #00ff00; font-weight: bold; }
+        .charts {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 15px;
+            max-width: 1240px;
+            margin: 20px auto;
+        }
+        .chart-card {
+            padding: 15px;
+            background: #333;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .chart-card h2 { font-size: 1rem; margin: 0 0 10px; }
+        .chart-wrapper { height: 220px; }
+        .metric-unavailable { color: #ffcc66; font-size: 0.9rem; }
+        @media (max-width: 900px) {
+            .charts { grid-template-columns: 1fr; max-width: 600px; }
+            .info-panel { width: auto; max-width: 600px; }
+            img { max-width: 100%; height: auto; }
+        }
+    </style>
+</head>
+<body>
+    <h1>Система відеоспостереження</h1>
+    
+    <div class="video-container">
+        <img src="{{ url_for('video_feed') }}" width="640" height="480" alt="Stream">
+    </div>
+
+    <div class="info-panel">
+        <p>Останній зафіксований рух: <span id="last-motion" class="highlight">Завантаження...</span></p>
+        
+        <hr style="border-color: #444;">
+        
+        <div class="controls">
+            <label for="sensitivity-slider">
+                Чутливість (Поріг площі: <span id="area-val" class="highlight">10000</span> px):
+            </label>
+            <!-- Чим менша площа контуру, тим вища чутливість -->
+            <input type="range" id="sensitivity-slider" min="1000" max="30000" step="500" value="10000" onchange="updateSensitivity(this.value)" oninput="document.getElementById('area-val').innerText = this.value">
+            <small style="color: #aaa;">Менше значення = вища чутливість до дрібних рухів</small>
+        </div>
+    </div>
+
+    <div class="charts">
+        <section class="chart-card">
+            <h2>Навантаження процесора</h2>
+            <div class="chart-wrapper"><canvas id="cpu-chart"></canvas></div>
+        </section>
+        <section class="chart-card">
+            <h2>Навантаження відеокарти</h2>
+            <div class="chart-wrapper"><canvas id="gpu-chart"></canvas></div>
+            <div id="gpu-status" class="metric-unavailable"></div>
+        </section>
+        <section class="chart-card">
+            <h2>Використання пам'яті</h2>
+            <div class="chart-wrapper"><canvas id="memory-chart"></canvas></div>
+        </section>
+    </div>
+
+    <script>
+        const maxPoints = 60;
+        const chartColors = { cpu: '#66d9ef', gpu: '#ffcc66', memory: '#a6e22e' };
+
+        function createMetricChart(elementId, label, color) {
+            return new Chart(document.getElementById(elementId), {
+                type: 'line',
+                data: { labels: [], datasets: [{ label, data: [], borderColor: color, backgroundColor: color + '33', fill: true, tension: 0.25, pointRadius: 0 }] },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    scales: { y: { min: 0, max: 100, ticks: { color: '#bbb', callback: value => value + '%' } }, x: { ticks: { color: '#bbb', maxTicksLimit: 6 } } },
+                    plugins: { legend: { labels: { color: '#fff' } } }
+                }
+            });
+        }
+
+        const charts = {
+            cpu: createMetricChart('cpu-chart', 'CPU', chartColors.cpu),
+            gpu: createMetricChart('gpu-chart', 'GPU', chartColors.gpu),
+            memory: createMetricChart('memory-chart', 'Пам’ять', chartColors.memory)
+        };
+
+        function addMetricPoint(chart, label, value) {
+            chart.data.labels.push(label);
+            chart.data.datasets[0].data.push(value);
+            if (chart.data.labels.length > maxPoints) {
+                chart.data.labels.shift();
+                chart.data.datasets[0].data.shift();
+            }
+            chart.update('none');
+        }
+
+        function updateMetrics() {
+            fetch('/metrics')
+                .then(response => response.json())
+                .then(data => {
+                    const label = new Date().toLocaleTimeString();
+                    addMetricPoint(charts.cpu, label, data.cpu);
+                    addMetricPoint(charts.memory, label, data.memory);
+                    if (data.gpu === null) {
+                        document.getElementById('gpu-status').innerText = 'Дані GPU недоступні';
+                    } else {
+                        document.getElementById('gpu-status').innerText = '';
+                        addMetricPoint(charts.gpu, label, data.gpu);
+                    }
+                })
+                .catch(err => console.error('Не вдалося отримати метрики:', err));
+        }
+
+        // Оновлення статусу останнього руху кожні 2 секунди
+        function checkStatus() {
+            fetch('/status')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('last-motion').innerText = data.last_motion;
+                })
+                .catch(err => console.error(err));
+        }
+        setInterval(checkStatus, 2000);
+        checkStatus();
+        updateMetrics();
+        setInterval(updateMetrics, 1000);
+
+        // Передача нового значення чутливості на сервер
+        function updateSensitivity(value) {
+            fetch('/set_sensitivity', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sensitivity: parseInt(value) })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if(data.status === 'success') {
+                    console.log('Чутливість змінено на:', data.min_contour_area);
+                }
+            })
+            .catch(err => console.error(err));
+        }
+    </script>
+</body>
+</html>
